@@ -1,3 +1,3 @@
 window.CLOUDBASE_CONFIG = {
-  env: "YOUR_CLOUDBASE_ENV_ID"
+  env: "cc-4gicfmjy884d01bf"
 };
