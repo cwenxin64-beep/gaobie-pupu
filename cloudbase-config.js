@@ -1,0 +1,3 @@
+window.CLOUDBASE_CONFIG = {
+  env: "YOUR_CLOUDBASE_ENV_ID"
+};

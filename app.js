@@ -814,13 +814,67 @@
     if (action === "end-quiet") { showToast("这段安静的时间已经收好"); return routeTo("E1"); }
   }
 
-  function offerTask() {
+  function aiConfigured() { return Boolean(window.CloudbaseAI?.isConfigured?.()); }
+  function storiesForAi() {
+    return state.stories.map(story => ({
+      title: story.title,
+      category: storyCategories.find(item => item.key === story.category)?.label || story.category,
+      body: story.body
+    })).filter(story => story.body);
+  }
+  function parseAiTask(text) {
+    try {
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      if (start >= 0 && end > start) text = text.slice(start, end + 1);
+      const task = JSON.parse(text);
+      if (!task.title || !task.body) return null;
+      return { title: task.title, short: task.short || task.title, body: task.body, after: task.after || "" };
+    } catch { return null; }
+  }
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("图片读取失败"));
+      reader.readAsDataURL(file);
+    });
+  }
+  async function readMediaDataUrls(ids) {
+    if (!ids?.length) return [];
+    const db = await openDB();
+    const images = [];
+    for (const id of ids.slice(0, 4)) {
+      const data = await new Promise(resolve => {
+        const request = db.transaction("media").objectStore("media").get(id);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => resolve(null);
+      });
+      if (data?.file && data.type?.startsWith("image/")) images.push(await fileToDataUrl(data.file));
+    }
+    return images;
+  }
+  async function generateAiTask(slot) {
+    const result = await window.CloudbaseAI.generateFarewellTask({ ordinal: slot.ordinal, stories: storiesForAi() });
+    const task = parseAiTask(result.text);
+    if (!task) throw new Error("AI 返回的告别小事格式不正确");
+    const variants = tasks[slot.ordinal - 1] ||= [];
+    variants[slot.variant] = task;
+    saveState();
+    render();
+    showToast("专属告别小事已生成");
+  }
+
+  async function offerTask() {
     const slot = currentSlot();
     if (slot.status !== "not_offered") { showToast("还有一件小事等着你"); return routeTo("C2"); }
     slot.status = "offered";
     saveState();
     requestMotionPermission();
     routeTo("C2");
+    if (aiConfigured()) {
+      try { await generateAiTask(slot); } catch (error) { showToast(error.message); }
+    }
   }
 
   function replaceTask() {
@@ -866,13 +920,30 @@
     syncStory(); const slot = currentSlot(); slot.record.date ||= todayISO(); slot.record.updatedAt = new Date().toISOString(); slot.status = "record_draft"; saveState(); showToast("草稿已保存，可以随时回来"); setTimeout(() => routeTo("C1"), 380);
   }
 
-  function prepareRecord() {
+  async function prepareRecord() {
     syncStory(); const slot = currentSlot(); slot.record.date ||= todayISO();
     if (!slot.record.originalText.trim() && !slot.record.mediaIds.length) {
       if (!confirm("我已完成这件小事，暂时不想写更多。要继续整理吗？")) return;
       slot.record.minimalConfirmed = true;
     }
-    slot.record.updatedAt = new Date().toISOString(); slot.status = "ready_to_archive"; saveState(); routeTo("C5");
+    slot.record.updatedAt = new Date().toISOString();
+    slot.record.arrangedRecord = arrangeLocally(slot.record.originalText);
+    if (aiConfigured()) {
+      try {
+        showToast("AI 正在整理这段记录…");
+        const images = await readMediaDataUrls(slot.record.mediaIds);
+        const result = await window.CloudbaseAI.arrangeRecord({
+          title: taskFor(slot)?.title,
+          text: slot.record.originalText,
+          images
+        });
+        slot.record.arrangedRecord = result.text;
+      } catch (error) {
+        showToast(error.message);
+        return;
+      }
+    }
+    slot.status = "ready_to_archive"; saveState(); routeTo("C5");
   }
 
   function openLayoutSheet() {
@@ -1086,11 +1157,25 @@
     return "我听见了。你不需要马上把它说完整，想到哪里就说到哪里。";
   }
 
-  function sendChatMessage() {
+  async function sendChatMessage() {
     const input = stage.querySelector("#e-chat-input"), value = input?.value.trim();
     if (!value) { showToast("可以先写下一句话再发送"); return; }
     state.chatMessages.push({ role: "user", text: value });
     saveState(); render();
+    if (aiConfigured()) {
+      try {
+        const result = await window.CloudbaseAI.spriteChat({
+          messages: state.chatMessages.map(item => ({ role: item.role, text: item.text })),
+          stories: storiesForAi()
+        });
+        state.chatMessages.push({ role: "assistant", text: result.text });
+        saveState();
+        if (state.route === "E6") render();
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
     clearTimeout(chatReplyTimer);
     chatReplyTimer = setTimeout(() => { chatReplyTimer = 0; state.chatMessages.push({ role: "assistant", text: companionReply(value) }); saveState(); if (state.route === "E6") render(); }, state.preferences.reducedMotion ? 60 : 480);
   }
