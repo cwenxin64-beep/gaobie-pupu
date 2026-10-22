@@ -1,0 +1,4 @@
+tmp-build/
+tmp-sdk/
+tmp-sdk-old/
+*.tgz
